@@ -1,0 +1,8 @@
+# Ignore the myvenv directory
+myvenv/
+
+# Ignore the faiss_index_ directory
+faiss_index_/
+
+# Ignore the .vscode folder
+.vscode/
