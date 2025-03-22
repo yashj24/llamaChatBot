@@ -7,7 +7,6 @@ from langchain_ollama import OllamaLLM
 import os
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 # pdf_path = "app/politics.pdf"
 faiss_index_path = "faiss_index_"
