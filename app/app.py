@@ -53,9 +53,11 @@ qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retrieve
 
 # Endpoint to handle queries
 @app.post("/api/query")
-async def handle_query(req: QueryRequest):
-    print("Inside post call")
-    query = req.query
+async def handle_query(request: Request):
+    data = await request.json()  
+    print(data)                  
+    query = data.get('query')     
+    print(query)
     
     response = qa.invoke(query)
     return {"response": response['result']} if isinstance(response, dict) else {"response": str(response)}
