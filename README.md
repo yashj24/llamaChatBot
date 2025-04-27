@@ -4,3 +4,8 @@
 3. run all the commands in cmd (not in powershell)
 to run main.py, first start the ollama server by running : "ollama serve", remember to be in venv
 then simply run the main.py file in a seperate cmd
+
+to run ui
+1. start ollama server(in root) - ollama serve
+2. start fastapi server(in root)- python -m uvicorn app.app:app --reload
+3. start react app(in frontend)- npm run start
