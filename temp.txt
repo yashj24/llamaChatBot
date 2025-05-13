@@ -1,0 +1,23 @@
+def lambda_handler(event, context):
+    function_name = 'my-function'
+    alias = 'prod'
+    min_concurrency = 1
+    max_concurrency = 10
+    metric_window = 15  # minutes
+
+    # 1. Get recent concurrency usage from CloudWatch
+    actual_usage = get_avg_concurrent_usage(function_name, alias, window=metric_window)
+
+    # 2. Get current provisioned value
+    current_provisioned = get_current_provisioned_value(function_name, alias)
+
+    # 3. Decide if adjustment is needed
+    if actual_usage >= 0.9 * current_provisioned and current_provisioned < max_concurrency:
+        new_value = min(current_provisioned + 1, max_concurrency)
+    elif actual_usage < 0.5 * current_provisioned and current_provisioned > min_concurrency:
+        new_value = max(current_provisioned - 1, min_concurrency)
+    else:
+        return "No change needed"
+
+    # 4. Call SSM Automation Runbook
+    run_automation(function_name, alias, new_value)
