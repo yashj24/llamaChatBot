@@ -1,23 +1,80 @@
-def lambda_handler(event, context):
-    function_name = 'my-function'
-    alias = 'prod'
-    min_concurrency = 1
-    max_concurrency = 10
-    metric_window = 15  # minutes
+description: "Scale Lambda provisioned concurrency based on usage"
+schemaVersion: '0.3'
+assumeRole: "{{ AutomationAssumeRole }}"
+parameters:
+  FunctionName:
+    type: String
+  Alias:
+    type: String
+  MinConcurrency:
+    type: Integer
+    default: 1
+  MaxConcurrency:
+    type: Integer
+    default: 10
+  AutomationAssumeRole:
+    type: String
+    description: "(Required) IAM Role ARN with Lambda and CloudWatch access"
 
-    # 1. Get recent concurrency usage from CloudWatch
-    actual_usage = get_avg_concurrent_usage(function_name, alias, window=metric_window)
+mainSteps:
+  - name: GetAverageUsage
+    action: aws:executeAwsApi
+    inputs:
+      Service: cloudwatch
+      Api: GetMetricStatistics
+      Namespace: AWS/Lambda
+      MetricName: ConcurrentExecutions
+      Dimensions:
+        - Name: FunctionName
+          Value: "{{ FunctionName }}"
+        - Name: Resource
+          Value: "{{ FunctionName }}:{{ Alias }}"
+      StartTime: "{{ aws:timestamp(-900) }}"
+      EndTime: "{{ aws:timestamp() }}"
+      Period: 60
+      Statistics:
+        - Average
+    outputs:
+      - Name: avgUsage
+        Selector: $.Datapoints[0].Average
+        Type: Double
 
-    # 2. Get current provisioned value
-    current_provisioned = get_current_provisioned_value(function_name, alias)
+  - name: GetCurrentProvisioned
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: GetProvisionedConcurrencyConfig
+      FunctionName: "{{ FunctionName }}"
+      Qualifier: "{{ Alias }}"
+    outputs:
+      - Name: provisioned
+        Selector: $.RequestedProvisionedConcurrentExecutions
+        Type: Integer
 
-    # 3. Decide if adjustment is needed
-    if actual_usage >= 0.9 * current_provisioned and current_provisioned < max_concurrency:
-        new_value = min(current_provisioned + 1, max_concurrency)
-    elif actual_usage < 0.5 * current_provisioned and current_provisioned > min_concurrency:
-        new_value = max(current_provisioned - 1, min_concurrency)
-    else:
-        return "No change needed"
+  - name: DecideAndScale
+    action: aws:executeScript
+    inputs:
+      Runtime: python3.8
+      Handler: handler
+      Script: |
+        def handler(events, context):
+            usage = float(events["GetAverageUsage"]["avgUsage"])
+            provisioned = int(events["GetCurrentProvisioned"]["provisioned"])
+            min_c = int(events["MinConcurrency"])
+            max_c = int(events["MaxConcurrency"])
 
-    # 4. Call SSM Automation Runbook
-    run_automation(function_name, alias, new_value)
+            if usage >= 0.9 * provisioned and provisioned < max_c:
+                return {"newValue": min(provisioned + 1, max_c)}
+            elif usage < 0.5 * provisioned and provisioned > min_c:
+                return {"newValue": max(provisioned - 1, min_c)}
+            else:
+                return {"newValue": provisioned}
+
+  - name: SetNewProvisioned
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: PutProvisionedConcurrencyConfig
+      FunctionName: "{{ FunctionName }}"
+      Qualifier: "{{ Alias }}"
+      ProvisionedConcurrentExecutions: "{{ DecideAndScale.newValue }}"
