@@ -1,120 +1,72 @@
-description: "Auto-scale Lambda provisioned concurrency based on usage"
+description: "Auto-scale Lambda provisioned concurrency for a function alias"
 schemaVersion: '0.3'
 assumeRole: "{{ AutomationAssumeRole }}"
 parameters:
   FunctionName:
     type: String
-    description: "The name of the Lambda function"
+    description: "Lambda function name"
   Alias:
     type: String
-    description: "The alias of the Lambda function (e.g., prod)"
+    description: "Lambda alias (e.g., prod)"
   MinConcurrency:
     type: Integer
     default: 1
-    description: "Minimum provisioned concurrency"
+    description: "Minimum concurrency"
   MaxConcurrency:
     type: Integer
     default: 10
-    description: "Maximum provisioned concurrency"
+    description: "Maximum concurrency"
   AutomationAssumeRole:
     type: String
-    description: "The IAM role ARN to assume during execution"
+    description: "IAM role that the automation will assume"
 
 mainSteps:
-  - name: GetTimestamps
+  - name: CalculateTimestampsAndDecide
     action: aws:executeScript
     inputs:
       Runtime: python3.8
       Handler: handler
       Script: |
+        import boto3
         import datetime
-        def handler(event, context):
+
+        def handler(events, context):
+            function_name = events["FunctionName"]
+            alias = events["Alias"]
+            min_c = int(events["MinConcurrency"])
+            max_c = int(events["MaxConcurrency"])
+
             now = datetime.datetime.utcnow()
             start = now - datetime.timedelta(minutes=15)
-            return {
-              "StartTime": start.isoformat(),
-              "EndTime": now.isoformat()
-            }
-    outputs:
-      - Name: StartTime
-        Selector: $.Payload.StartTime
-        Type: String
-      - Name: EndTime
-        Selector: $.Payload.EndTime
-        Type: String
 
-  - name: GetAverageUsage
-    action: aws:executeAwsApi
-    inputs:
-      Service: cloudwatch
-      Api: GetMetricStatistics
-      Namespace: AWS/Lambda
-      MetricName: ConcurrentExecutions
-      Dimensions:
-        - Name: FunctionName
-          Value: "{{ FunctionName }}"
-        - Name: Resource
-          Value: "{{ FunctionName }}:{{ Alias }}"
-      StartTime: "{{ GetTimestamps.StartTime }}"
-      EndTime: "{{ GetTimestamps.EndTime }}"
-      Period: 60
-      Statistics:
-        - Average
-    outputs:
-      - Name: avgUsage
-        Selector: $.Datapoints[0].Average
-        Type: String
+            cloudwatch = boto3.client('cloudwatch')
+            lambda_client = boto3.client('lambda')
 
-  - name: GetCurrentProvisioned
-    action: aws:executeAwsApi
-    inputs:
-      Service: lambda
-      Api: GetProvisionedConcurrencyConfig
-      FunctionName: "{{ FunctionName }}"
-      Qualifier: "{{ Alias }}"
-    outputs:
-      - Name: currentProvisioned
-        Selector: $.RequestedProvisionedConcurrentExecutions
-        Type: String
-
-  - name: DecideAndScale
-    action: aws:executeScript
-    inputs:
-      Runtime: python3.8
-      Handler: handler
-      Script: |
-        def handler(events, context):
             try:
-                usage = float(events["GetAverageUsage"]["avgUsage"])
+                cw_resp = cloudwatch.get_metric_statistics(
+                    Namespace='AWS/Lambda',
+                    MetricName='ConcurrentExecutions',
+                    Dimensions=[
+                        {'Name': 'FunctionName', 'Value': function_name},
+                        {'Name': 'Resource', 'Value': f"{function_name}:{alias}"}
+                    ],
+                    StartTime=start,
+                    EndTime=now,
+                    Period=60,
+                    Statistics=['Average']
+                )
+                datapoints = cw_resp.get("Datapoints", [])
+                usage = float(datapoints[0]["Average"]) if datapoints else 0.0
             except:
                 usage = 0.0
 
             try:
-                provisioned = int(events["GetCurrentProvisioned"]["currentProvisioned"])
+                pc_resp = lambda_client.get_provisioned_concurrency_config(
+                    FunctionName=function_name,
+                    Qualifier=alias
+                )
+                current = int(pc_resp.get("RequestedProvisionedConcurrentExecutions", 1))
             except:
-                provisioned = 1
+                current = 1
 
-            min_c = int(events["MinConcurrency"])
-            max_c = int(events["MaxConcurrency"])
-
-            if usage >= 0.9 * provisioned and provisioned < max_c:
-                new_val = provisioned + 1
-            elif usage < 0.5 * provisioned and provisioned > min_c:
-                new_val = provisioned - 1
-            else:
-                new_val = provisioned
-
-            return {"newValue": str(new_val)}
-    outputs:
-      - Name: newValue
-        Selector: $.Payload.newValue
-        Type: String
-
-  - name: SetNewProvisioned
-    action: aws:executeAwsApi
-    inputs:
-      Service: lambda
-      Api: PutProvisionedConcurrencyConfig
-      FunctionName: "{{ FunctionName }}"
-      Qualifier: "{{ Alias }}"
-      ProvisionedConcurrentExecutions: "{{ DecideAndScale.newValue }}"
+            if usage >= 0
