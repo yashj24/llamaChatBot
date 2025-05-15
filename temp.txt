@@ -1,20 +1,24 @@
-description: "Scale Lambda provisioned concurrency based on usage"
+description: "Auto-scale Lambda provisioned concurrency based on usage"
 schemaVersion: '0.3'
 assumeRole: "{{ AutomationAssumeRole }}"
 parameters:
   FunctionName:
     type: String
+    description: "Lambda function name"
   Alias:
     type: String
+    description: "Lambda alias (e.g., prod)"
   MinConcurrency:
     type: Integer
     default: 1
+    description: "Minimum allowed provisioned concurrency"
   MaxConcurrency:
     type: Integer
     default: 10
+    description: "Maximum allowed provisioned concurrency"
   AutomationAssumeRole:
     type: String
-    description: "(Required) IAM Role ARN with Lambda and CloudWatch access"
+    description: "IAM role to assume"
 
 mainSteps:
   - name: GetAverageUsage
@@ -37,7 +41,7 @@ mainSteps:
     outputs:
       - Name: avgUsage
         Selector: $.Datapoints[0].Average
-        Type: Double
+        Type: String
 
   - name: GetCurrentProvisioned
     action: aws:executeAwsApi
@@ -47,34 +51,48 @@ mainSteps:
       FunctionName: "{{ FunctionName }}"
       Qualifier: "{{ Alias }}"
     outputs:
-      - Name: provisioned
+      - Name: currentProvisioned
         Selector: $.RequestedProvisionedConcurrentExecutions
-        Type: Integer
+        Type: String
 
-  - name: DecideAndScale
+  - name: CalculateNewValue
     action: aws:executeScript
     inputs:
       Runtime: python3.8
       Handler: handler
       Script: |
         def handler(events, context):
-            usage = float(events["GetAverageUsage"]["avgUsage"])
-            provisioned = int(events["GetCurrentProvisioned"]["provisioned"])
+            try:
+                usage = float(events["GetAverageUsage"]["avgUsage"])
+            except (TypeError, ValueError):
+                usage = 0.0
+
+            try:
+                provisioned = int(events["GetCurrentProvisioned"]["currentProvisioned"])
+            except (TypeError, ValueError):
+                provisioned = 1
+
             min_c = int(events["MinConcurrency"])
             max_c = int(events["MaxConcurrency"])
 
             if usage >= 0.9 * provisioned and provisioned < max_c:
-                return {"newValue": min(provisioned + 1, max_c)}
+                new_val = min(provisioned + 1, max_c)
             elif usage < 0.5 * provisioned and provisioned > min_c:
-                return {"newValue": max(provisioned - 1, min_c)}
+                new_val = max(provisioned - 1, min_c)
             else:
-                return {"newValue": provisioned}
+                new_val = provisioned
 
-  - name: SetNewProvisioned
+            return { "newValue": str(new_val) }
+    outputs:
+      - Name: newValue
+        Selector: $.Payload.newValue
+        Type: String
+
+  - name: ApplyScaling
     action: aws:executeAwsApi
     inputs:
       Service: lambda
       Api: PutProvisionedConcurrencyConfig
       FunctionName: "{{ FunctionName }}"
       Qualifier: "{{ Alias }}"
-      ProvisionedConcurrentExecutions: "{{ DecideAndScale.newValue }}"
+      ProvisionedConcurrentExecutions: "{{ CalculateNewValue.newValue }}"
