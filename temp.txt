@@ -1,72 +1,42 @@
-description: "Auto-scale Lambda provisioned concurrency for a function alias"
-schemaVersion: '0.3'
-assumeRole: "{{ AutomationAssumeRole }}"
-parameters:
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda AutoScaler for Provisioned Concurrency
+
+Parameters:
   FunctionName:
-    type: String
-    description: "Lambda function name"
-  Alias:
-    type: String
-    description: "Lambda alias (e.g., prod)"
-  MinConcurrency:
-    type: Integer
-    default: 1
-    description: "Minimum concurrency"
-  MaxConcurrency:
-    type: Integer
-    default: 10
-    description: "Maximum concurrency"
-  AutomationAssumeRole:
-    type: String
-    description: "IAM role that the automation will assume"
+    Type: String
+  AliasName:
+    Type: String
+    Default: live
 
-mainSteps:
-  - name: CalculateTimestampsAndDecide
-    action: aws:executeScript
-    inputs:
-      Runtime: python3.8
-      Handler: handler
-      Script: |
-        import boto3
-        import datetime
+Resources:
+  AutoScalerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${FunctionName}-AutoScaler"
+      Runtime: python3.12
+      Handler: autoscaler.lambda_handler
+      Code:
+        S3Bucket: YOUR_BUCKET
+        S3Key: autoscaler.zip
+      Role: arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_EXECUTION_ROLE
+      Timeout: 60
+      Environment:
+        Variables:
+          FUNCTION_NAME: !Ref FunctionName
+          ALIAS_NAME: !Ref AliasName
 
-        def handler(events, context):
-            function_name = events["FunctionName"]
-            alias = events["Alias"]
-            min_c = int(events["MinConcurrency"])
-            max_c = int(events["MaxConcurrency"])
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Arn: !GetAtt AutoScalerFunction.Arn
+          Id: TargetFunctionV1
 
-            now = datetime.datetime.utcnow()
-            start = now - datetime.timedelta(minutes=15)
-
-            cloudwatch = boto3.client('cloudwatch')
-            lambda_client = boto3.client('lambda')
-
-            try:
-                cw_resp = cloudwatch.get_metric_statistics(
-                    Namespace='AWS/Lambda',
-                    MetricName='ConcurrentExecutions',
-                    Dimensions=[
-                        {'Name': 'FunctionName', 'Value': function_name},
-                        {'Name': 'Resource', 'Value': f"{function_name}:{alias}"}
-                    ],
-                    StartTime=start,
-                    EndTime=now,
-                    Period=60,
-                    Statistics=['Average']
-                )
-                datapoints = cw_resp.get("Datapoints", [])
-                usage = float(datapoints[0]["Average"]) if datapoints else 0.0
-            except:
-                usage = 0.0
-
-            try:
-                pc_resp = lambda_client.get_provisioned_concurrency_config(
-                    FunctionName=function_name,
-                    Qualifier=alias
-                )
-                current = int(pc_resp.get("RequestedProvisionedConcurrentExecutions", 1))
-            except:
-                current = 1
-
-            if usage >= 0
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AutoScalerFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt ScheduleRule.Arn
