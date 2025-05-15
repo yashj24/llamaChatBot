@@ -1,42 +1,103 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Lambda AutoScaler for Provisioned Concurrency
+description: |
+  Dynamically adjusts provisioned concurrency for a Lambda function by ±1 based on usage.
+schemaVersion: '0.3'
+assumeRole: '{{ AutomationAssumeRole }}'
 
-Parameters:
+parameters:
   FunctionName:
-    Type: String
-  AliasName:
-    Type: String
-    Default: live
+    type: String
+    description: "Lambda function name (without alias)"
+  Alias:
+    type: String
+    default: "live"
+    description: "Alias of the Lambda function"
+  ProvisionedMin:
+    type: Integer
+    default: 1
+    description: "Minimum provisioned concurrency"
+  ProvisionedMax:
+    type: Integer
+    default: 100
+    description: "Maximum provisioned concurrency"
+  AutomationAssumeRole:
+    type: String
+    description: "IAM role to be assumed for running this automation"
 
-Resources:
-  AutoScalerFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub "${FunctionName}-AutoScaler"
-      Runtime: python3.12
-      Handler: autoscaler.lambda_handler
-      Code:
-        S3Bucket: YOUR_BUCKET
-        S3Key: autoscaler.zip
-      Role: arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_EXECUTION_ROLE
-      Timeout: 60
-      Environment:
-        Variables:
-          FUNCTION_NAME: !Ref FunctionName
-          ALIAS_NAME: !Ref AliasName
+mainSteps:
+  - name: getConcurrencyUtilization
+    action: aws:executeAwsApi
+    inputs:
+      Service: cloudwatch
+      Api: GetMetricStatistics
+      Namespace: AWS/Lambda
+      MetricName: ProvisionedConcurrencyUtilization
+      Dimensions:
+        - Name: FunctionName
+          Value: '{{ FunctionName }}'
+        - Name: Resource
+          Value: '{{ FunctionName }}:{{ Alias }}'
+      StartTime: "{{ global:timestamp('-15min') }}"
+      EndTime: "{{ global:timestamp() }}"
+      Period: 300
+      Statistics:
+        - Average
+    outputs:
+      - Name: Utilization
+        Selector: "$.Datapoints[0].Average"
+        Type: Double
 
-  ScheduleRule:
-    Type: AWS::Events::Rule
-    Properties:
-      ScheduleExpression: rate(5 minutes)
-      Targets:
-        - Arn: !GetAtt AutoScalerFunction.Arn
-          Id: TargetFunctionV1
+  - name: getCurrentProvisioned
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: GetProvisionedConcurrencyConfig
+      FunctionName: '{{ FunctionName }}'
+      Qualifier: '{{ Alias }}'
+    isEnd: false
+    onFailure: continue
+    outputs:
+      - Name: CurrentProvisioned
+        Selector: "$.RequestedProvisionedConcurrentExecutions"
+        Type: Integer
 
-  PermissionForEventsToInvokeLambda:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref AutoScalerFunction
-      Action: 'lambda:InvokeFunction'
-      Principal: 'events.amazonaws.com'
-      SourceArn: !GetAtt ScheduleRule.Arn
+  - name: calculateScaleDirection
+    action: aws:branch
+    inputs:
+      Choices:
+        - NextStep: scaleUp
+          Variable: "{{ getConcurrencyUtilization.Utilization }}"
+          NumericGreaterThan: 0.7
+        - NextStep: scaleDown
+          Variable: "{{ getConcurrencyUtilization.Utilization }}"
+          NumericLessThan: 0.3
+        - NextStep: endStep
+
+  - name: scaleUp
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: PutProvisionedConcurrencyConfig
+      FunctionName: '{{ FunctionName }}'
+      Qualifier: '{{ Alias }}'
+      ProvisionedConcurrentExecutions: "{{ min(getCurrentProvisioned.CurrentProvisioned + 1, ProvisionedMax) }}"
+    isEnd: true
+
+  - name: scaleDown
+    action: aws:executeAwsApi
+    inputs:
+      Service: lambda
+      Api: PutProvisionedConcurrencyConfig
+      FunctionName: '{{ FunctionName }}'
+      Qualifier: '{{ Alias }}'
+      ProvisionedConcurrentExecutions: "{{ max(getCurrentProvisioned.CurrentProvisioned - 1, ProvisionedMin) }}"
+    isEnd: true
+
+  - name: endStep
+    action: aws:executeScript
+    inputs:
+      Runtime: python3.8
+      Handler: end_handler
+      Script: |
+        def end_handler(event, context):
+            return {"status": "No scaling needed."}
+    isEnd: true
