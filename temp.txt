@@ -1,103 +1,89 @@
-description: |
-  Dynamically adjusts provisioned concurrency for a Lambda function by ±1 based on usage.
-schemaVersion: '0.3'
-assumeRole: '{{ AutomationAssumeRole }}'
+Automating Lambda Provisioned Concurrency Using Runbooks
 
-parameters:
-  FunctionName:
-    type: String
-    description: "Lambda function name (without alias)"
-  Alias:
-    type: String
-    default: "live"
-    description: "Alias of the Lambda function"
-  ProvisionedMin:
-    type: Integer
-    default: 1
-    description: "Minimum provisioned concurrency"
-  ProvisionedMax:
-    type: Integer
-    default: 100
-    description: "Maximum provisioned concurrency"
-  AutomationAssumeRole:
-    type: String
-    description: "IAM role to be assumed for running this automation"
+1. What is a Runbook and Systems Manager Automation?
 
-mainSteps:
-  - name: getConcurrencyUtilization
-    action: aws:executeAwsApi
-    inputs:
-      Service: cloudwatch
-      Api: GetMetricStatistics
-      Namespace: AWS/Lambda
-      MetricName: ProvisionedConcurrencyUtilization
-      Dimensions:
-        - Name: FunctionName
-          Value: '{{ FunctionName }}'
-        - Name: Resource
-          Value: '{{ FunctionName }}:{{ Alias }}'
-      StartTime: "{{ global:timestamp('-15min') }}"
-      EndTime: "{{ global:timestamp() }}"
-      Period: 300
-      Statistics:
-        - Average
-    outputs:
-      - Name: Utilization
-        Selector: "$.Datapoints[0].Average"
-        Type: Double
+A Runbook in AWS Systems Manager Automation is a predefined workflow of steps used to perform routine IT tasks or
 
-  - name: getCurrentProvisioned
-    action: aws:executeAwsApi
-    inputs:
-      Service: lambda
-      Api: GetProvisionedConcurrencyConfig
-      FunctionName: '{{ FunctionName }}'
-      Qualifier: '{{ Alias }}'
-    isEnd: false
-    onFailure: continue
-    outputs:
-      - Name: CurrentProvisioned
-        Selector: "$.RequestedProvisionedConcurrentExecutions"
-        Type: Integer
+complex operations. Systems Manager Automation enables you to safely and repeatedly automate operational tasks
 
-  - name: calculateScaleDirection
-    action: aws:branch
-    inputs:
-      Choices:
-        - NextStep: scaleUp
-          Variable: "{{ getConcurrencyUtilization.Utilization }}"
-          NumericGreaterThan: 0.7
-        - NextStep: scaleDown
-          Variable: "{{ getConcurrencyUtilization.Utilization }}"
-          NumericLessThan: 0.3
-        - NextStep: endStep
+using runbooks without requiring human intervention.
 
-  - name: scaleUp
-    action: aws:executeAwsApi
-    inputs:
-      Service: lambda
-      Api: PutProvisionedConcurrencyConfig
-      FunctionName: '{{ FunctionName }}'
-      Qualifier: '{{ Alias }}'
-      ProvisionedConcurrentExecutions: "{{ min(getCurrentProvisioned.CurrentProvisioned + 1, ProvisionedMax) }}"
-    isEnd: true
+2. Common Uses of Runbooks
 
-  - name: scaleDown
-    action: aws:executeAwsApi
-    inputs:
-      Service: lambda
-      Api: PutProvisionedConcurrencyConfig
-      FunctionName: '{{ FunctionName }}'
-      Qualifier: '{{ Alias }}'
-      ProvisionedConcurrentExecutions: "{{ max(getCurrentProvisioned.CurrentProvisioned - 1, ProvisionedMin) }}"
-    isEnd: true
+Runbooks are commonly used for:
 
-  - name: endStep
-    action: aws:executeScript
-    inputs:
-      Runtime: python3.8
-      Handler: end_handler
-      Script: |
-        def end_handler(event, context):
-            return {"status": "No scaling needed."}
-    isEnd: true
+- Patching instances
+
+- Restarting services
+
+- Rotating secrets
+
+- Managing backups
+
+- Provisioning or deprovisioning resources
+
+- Automating AWS service configurations such as Lambda concurrency
+
+3. Our Use Case: Lambda Provisioned Concurrency
+
+We use a custom runbook to automate setting provisioned concurrency for AWS Lambda functions. This ensures the
+
+function can handle predictable traffic spikes without facing cold starts. EventBridge Scheduler triggers the runbook
+
+based on known peak and off-peak hours.
+
+4. Understanding Lambda Cold Start Issue
+
+Cold starts occur when AWS Lambda needs to initialize a new execution environment before running your function. This
+
+can lead to high latency especially when functions are idle for long or are frequently invoked during peak loads. For
+
+user-facing APIs or critical services, this latency is unacceptable.
+
+5. Our Solution to Cold Starts
+
+We mitigate cold start delays by setting 'Provisioned Concurrency' on a Lambda alias using a custom runbook. This
+
+pre-warms Lambda execution environments, making them instantly available. The concurrency is increased before peak
+
+hours and reduced afterward, optimizing cost and performance.
+
+6. Implementation Steps
+
+1. Create a custom SSM Automation runbook that calls 'put-provisioned-concurrency-config'
+
+2. Define inputs: FunctionName, Alias, ProvisionedCount
+
+3. Create an IAM role for EventBridge Scheduler to start automation
+
+4. Schedule two EventBridge Scheduler rules:
+
+ - One to increase concurrency (e.g., at 11:00 AM IST)
+
+ - One to decrease concurrency (e.g., at 07:00 PM IST)
+
+5. Pass constant JSON input to the scheduler, like:
+
+ {
+
+ "FunctionName": "my-lambda-function",
+
+ "Alias": "prod",
+
+ "ProvisionedCount": "5"
+
+ }
+
+Automating Lambda Provisioned Concurrency Using Runbooks
+
+7. Future Scope and Improvements
+
+- Implement dynamic concurrency scaling using CloudWatch metrics (RequestCount, Duration, Throttles)
+
+- Integrate alerts for failed executions using SNS
+
+- Use Parameter Store to manage peak hours centrally
+
+- Extend support to scale multiple Lambda functions together
+
+- Track concurrency effectiveness with custom metrics
