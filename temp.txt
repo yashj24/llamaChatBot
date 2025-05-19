@@ -1,89 +1,76 @@
-Automating Lambda Provisioned Concurrency Using Runbooks
+Presentation Script: Automating Lambda Provisioned Concurrency with AWS Runbooks
+Slide 1: Introduction
+Welcome everyone, and thank you for joining today. I'm excited to present a solution we’ve developed that automates the provisioning of concurrency for AWS Lambda functions using AWS Systems Manager Runbooks and EventBridge Scheduler.
 
-1. What is a Runbook and Systems Manager Automation?
+In this presentation, we'll walk through the architecture, use case, implementation details, and benefits of our automation system designed to tackle cold start issues and optimize costs in serverless environments.
+Slide 2: What is a Runbook?
+A Runbook in AWS is a predefined set of automation steps created using Systems Manager Automation. It's used to perform operational tasks, such as starting EC2 instances, rotating secrets, or in our case — managing Lambda provisioned concurrency.
 
-A Runbook in AWS Systems Manager Automation is a predefined workflow of steps used to perform routine IT tasks or
+Runbooks are designed to reduce manual effort, minimize human error, and enforce repeatable, auditable operations across AWS services.
+Slide 3: Uses of Runbooks
+Runbooks serve a wide range of purposes:
+- Automating operational procedures
+- Enforcing compliance and security policies
+- Reducing manual errors
+- Orchestrating AWS resource management tasks
 
-complex operations. Systems Manager Automation enables you to safely and repeatedly automate operational tasks
+In our case, we are leveraging a runbook to dynamically adjust the provisioned concurrency settings of Lambda functions based on scheduled workloads.
+Slide 4: Our Use Case – Automating Lambda Provisioned Concurrency
+In our application ecosystem, we rely heavily on AWS Lambda functions to support APIs and internal microservices. While serverless architecture offers flexibility and cost savings, it also introduces one major challenge: cold start latency.
 
-using runbooks without requiring human intervention.
+We noticed that during specific periods of the day — such as early morning login traffic and evening engagement windows — user activity surged dramatically. These traffic spikes led to:
 
-2. Common Uses of Runbooks
+- Cold starts for functions that hadn't been invoked recently
+- Increased response times, especially for initial requests
+- A noticeable impact on user experience, particularly for latency-sensitive workflows
 
-Runbooks are commonly used for:
+Initially, we considered using provisioned concurrency, which keeps pre-initialized Lambda instances ready to serve requests instantly. While effective at mitigating cold starts, keeping provisioned concurrency enabled 24/7 is not cost-effective, especially during low-traffic periods like nighttime or weekends.
 
-- Patching instances
+To balance performance and cost, we decided to automate this process by:
+1. Analyzing historical traffic data to identify consistent peak and off-peak times
+2. Creating a custom Systems Manager (SSM) runbook to dynamically set provisioned concurrency for specific Lambda aliases
+3. Triggering this runbook via EventBridge Scheduler, using cron expressions aligned with our workload patterns
 
-- Restarting services
+For example:
+- Every day at 11:00 AM, the runbook scales concurrency to 5 to prepare for peak load.
+- Every evening at 6:00 PM, the concurrency is reduced to 1 or even 0, depending on the service.
 
-- Rotating secrets
+This allowed us to:
+- Eliminate cold starts during periods of high demand
+- Improve user satisfaction through consistently low response times
+- Control costs by reducing concurrency when it wasn’t needed
+- Remove manual intervention, ensuring the process runs reliably and consistently
 
-- Managing backups
+This solution gave us predictability, performance, and efficiency — all fully automated using native AWS services, without adding complexity to our deployment pipelines or requiring third-party tooling.
+Slide 5: Understanding Cold Start Issues
+Cold starts occur when a Lambda function is invoked but no execution environment is ready. AWS needs time to initialize the container, download code, and prepare the runtime.
 
-- Provisioning or deprovisioning resources
+This delay — usually between 100ms to 1 second or more — can be disruptive for user-facing APIs, especially during traffic spikes or after idle periods.
 
-- Automating AWS service configurations such as Lambda concurrency
+Provisioned concurrency is AWS’s solution to eliminate cold starts. By pre-warming execution environments, functions are always ready to respond instantly.
+Slide 6: How We Resolved Cold Starts
+We used AWS provisioned concurrency combined with automation.
 
-3. Our Use Case: Lambda Provisioned Concurrency
+Step-by-step:
+- Created a Lambda function with an alias (like 'live')
+- Set up a Systems Manager runbook to update the provisioned concurrency for that alias
+- Scheduled this runbook using EventBridge Scheduler with cron expressions based on traffic patterns
 
-We use a custom runbook to automate setting provisioned concurrency for AWS Lambda functions. This ensures the
+This ensured our Lambda was warm and ready before peak traffic hit, and scaled down when traffic dropped.
+Slide 7: Automation Steps (Summary)
+1. Create Lambda and publish a version
+2. Create an alias for that version
+3. Write a Lambda that sets provisioned concurrency using `boto3`
+4. Wrap that Lambda in a Systems Manager Automation document (runbook)
+5. Use EventBridge Scheduler to trigger the runbook with input (function name, alias, concurrency count)
+6. Secure it with appropriate IAM roles and policies
+7. Monitor the success and failures via AWS Console and CloudWatch Logs
+Slide 8: Future Scope
+In the future, we aim to make this system adaptive.
 
-function can handle predictable traffic spikes without facing cold starts. EventBridge Scheduler triggers the runbook
+Ideas include:
+- Adding CloudWatch metrics to dynamically determine provisioned concurrency based on real-time traffic
+- Integrating anomaly detection to respond to unusual traffic spikes
+- Using machine learning models to predict future load and scale ahead of time
 
-based on known peak and off-peak hours.
-
-4. Understanding Lambda Cold Start Issue
-
-Cold starts occur when AWS Lambda needs to initialize a new execution environment before running your function. This
-
-can lead to high latency especially when functions are idle for long or are frequently invoked during peak loads. For
-
-user-facing APIs or critical services, this latency is unacceptable.
-
-5. Our Solution to Cold Starts
-
-We mitigate cold start delays by setting 'Provisioned Concurrency' on a Lambda alias using a custom runbook. This
-
-pre-warms Lambda execution environments, making them instantly available. The concurrency is increased before peak
-
-hours and reduced afterward, optimizing cost and performance.
-
-6. Implementation Steps
-
-1. Create a custom SSM Automation runbook that calls 'put-provisioned-concurrency-config'
-
-2. Define inputs: FunctionName, Alias, ProvisionedCount
-
-3. Create an IAM role for EventBridge Scheduler to start automation
-
-4. Schedule two EventBridge Scheduler rules:
-
- - One to increase concurrency (e.g., at 11:00 AM IST)
-
- - One to decrease concurrency (e.g., at 07:00 PM IST)
-
-5. Pass constant JSON input to the scheduler, like:
-
- {
-
- "FunctionName": "my-lambda-function",
-
- "Alias": "prod",
-
- "ProvisionedCount": "5"
-
- }
-
-Automating Lambda Provisioned Concurrency Using Runbooks
-
-7. Future Scope and Improvements
-
-- Implement dynamic concurrency scaling using CloudWatch metrics (RequestCount, Duration, Throttles)
-
-- Integrate alerts for failed executions using SNS
-
-- Use Parameter Store to manage peak hours centrally
-
-- Extend support to scale multiple Lambda functions together
-
-- Track concurrency effectiveness with custom metrics
+These improvements can make the system more intelligent, cost-efficient, and responsive to changing workloads.
